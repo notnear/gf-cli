@@ -15,7 +15,6 @@ import (
 	"github.com/gogf/gf/os/gtime"
 	"github.com/gogf/gf/os/gtimer"
 	"github.com/gogf/gf/text/gstr"
-	"github.com/gogf/gf/util/gconv"
 	"os"
 	"runtime"
 	"strings"
@@ -156,7 +155,7 @@ func (app *App) Run() {
 	// Rebuild and run the codes.
 	renamePath := ""
 	mlog.Printf("build: %s", app.File)
-	outputPath := gfile.Join(gfile.TempDir(), "gf-cli", gfile.Name(app.File))
+	outputPath := gfile.Join("bin", gfile.Name(app.File))
 	if runtime.GOOS == "windows" {
 		outputPath += ".exe"
 		if gfile.Exists(outputPath) {
@@ -180,16 +179,10 @@ func (app *App) Run() {
 		}
 	}
 	// In case of `pipe: too many open files` error.
-	ulimitCommand := ""
-	if gproc.SearchBinary("ulimit") != "" {
-		if r, _ := gproc.ShellExec("ulimit -n"); gconv.Int(strings.Trim(r, "\n")) < 65535 {
-			ulimitCommand = `ulimit -n 65535 && `
-		}
-	}
 	// Build the app.
 	buildCommand := fmt.Sprintf(`go build -o %s %s %s`, outputPath, app.Options, app.File)
 	mlog.Print(buildCommand)
-	result, err := gproc.ShellExec(fmt.Sprintf(`%s%s`, ulimitCommand, buildCommand))
+	result, err := gproc.ShellExec(buildCommand)
 	if err != nil {
 		mlog.Printf("build error: \n%s%s", result, err.Error())
 		return

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	_ "github.com/denisenkom/go-mssqldb"
-	"github.com/gogf/gf-cli/library/allyes"
 	"github.com/gogf/gf-cli/library/mlog"
 	"github.com/gogf/gf/database/gdb"
 	"github.com/gogf/gf/frame/g"
@@ -20,26 +19,99 @@ import (
 )
 
 const (
-	DEFAULT_GEN_MODEL_PATH = "./app/model"
+	genModelPath                 = "./app/model"
+	nodeNameGenModelInConfigFile = "gfcli.gen.model"
 )
 
+func HelpModel() {
+	mlog.Print(gstr.TrimLeft(`
+USAGE 
+    gf gen model [OPTION]
+
+OPTION
+    -/--path             directory path for generated files.
+    -l, --link           database configuration, the same as the ORM configuration of GoFrame.
+    -t, --tables         generate models only for given tables, multiple table names separated with ',' 
+    -g, --group          specifying the configuration group name of database for generated ORM instance,
+                         it's not necessary and the default value is "default"
+    -c, --config         used to specify the configuration file for database, it's commonly not necessary.
+                         If "-l" is not passed, it will search "./config.toml" and "./config/config.toml" 
+                         in current working directory in default.
+    -p, --prefix         add prefix for all table of specified link/database tables.
+    -r, --removePrefix   remove specified prefix of the table, multiple prefix separated with ',' 
+    -m, --mod            module name for generated golang file imports.
+                  
+CONFIGURATION SUPPORT
+    Options are also supported by configuration file.
+    It's suggested using configuration file instead of command line arguments making producing. 
+    The configuration node name is "gf.gen.model", which also supports multiple databases, for example:
+    [gfcli]
+        [[gfcli.gen.model]]
+            link   = "mysql:root:12345678@tcp(127.0.0.1:3306)/test"
+            tables = "order,products"
+        [[gfcli.gen.model]]
+            link   = "mysql:root:12345678@tcp(127.0.0.1:3306)/primary"
+            path   = "./my-app"
+            prefix = "primary_"
+            tables = "user, userDetail"
+
+EXAMPLES
+    gf gen model
+    gf gen model -l "mysql:root:12345678@tcp(127.0.0.1:3306)/test"
+    gf gen model -path ./model -c config.yaml -g user-center -t user,user_detail,user_login
+    gf gen model -r user_
+`))
+}
+
 // doGenModel implements the "gen model" command.
-func doGenModel(parser *gcmd.Parser) {
-	var err error
-	genPath := parser.GetArg(3, DEFAULT_GEN_MODEL_PATH)
-	if !gfile.IsEmpty(genPath) && !allyes.Check() {
-		s := gcmd.Scanf("path '%s' is not empty, files might be overwrote, continue? [y/n]: ", genPath)
-		if strings.EqualFold(s, "n") {
-			return
-		}
+func doGenModel() {
+	parser, err := gcmd.Parse(g.MapStrBool{
+		"path":           true,
+		"m,mod":          true,
+		"l,link":         true,
+		"t,tables":       true,
+		"g,group":        true,
+		"c,config":       true,
+		"p,prefix":       true,
+		"r,removePrefix": true,
+	})
+	if err != nil {
+		mlog.Fatal(err)
 	}
+	config := g.Cfg()
+	if config.Available() {
+		v := config.GetVar(nodeNameGenModelInConfigFile)
+		if v.IsEmpty() && g.IsEmpty(parser.GetOptAll()) {
+			mlog.Fatal(`command arguments and configurations not found for generating model files`)
+		}
+		if v.IsSlice() {
+			for i := 0; i < len(v.Interfaces()); i++ {
+				doGenModelForArray(i, parser)
+			}
+		} else {
+			doGenModelForArray(-1, parser)
+		}
+	} else {
+		doGenModelForArray(-1, parser)
+	}
+	mlog.Print("done!")
+}
+
+func doGenModelForArray(index int, parser *gcmd.Parser) {
 	var (
-		tableOpt    = parser.GetOpt("table")
-		linkInfo    = parser.GetOpt("link")
-		configFile  = parser.GetOpt("config")
-		configGroup = parser.GetOpt("group", gdb.DEFAULT_GROUP_NAME)
-		prefixArray = gstr.SplitAndTrim(parser.GetOpt("prefix"), ",")
+		err          error
+		genPath      = getOptionOrConfigForModel(index, parser, "path", genModelPath)
+		tableOpt     = getOptionOrConfigForModel(index, parser, "tables")
+		linkInfo     = getOptionOrConfigForModel(index, parser, "link")
+		configFile   = getOptionOrConfigForModel(index, parser, "config")
+		configGroup  = getOptionOrConfigForModel(index, parser, "group", gdb.DefaultGroupName)
+		removePrefix = getOptionOrConfigForModel(index, parser, "removePrefix")
 	)
+	// Make it compatible with old CLI version.
+	if removePrefix == "" {
+		removePrefix = getOptionOrConfigForModel(index, parser, "remove-prefix")
+	}
+	removePrefixArray := gstr.SplitAndTrim(removePrefix, ",")
 	if linkInfo != "" {
 		path := gfile.TempDir() + gfile.Separator + "config.toml"
 		if err := gfile.PutContents(path, fmt.Sprintf("[database]\n\tlink=\"%s\"", linkInfo)); err != nil {
@@ -83,12 +155,11 @@ func doGenModel(parser *gcmd.Parser) {
 
 	for _, table := range tables {
 		variable := table
-		for _, v := range prefixArray {
+		for _, v := range removePrefixArray {
 			variable = gstr.TrimLeftStr(variable, v)
 		}
 		generateModelContentFile(db, table, variable, genPath, configGroup)
 	}
-	mlog.Print("done!")
 }
 
 // generateModelContentFile generates the model content of given table.
@@ -104,7 +175,7 @@ func generateModelContentFile(db gdb.DB, table, variable, folderPath, groupName 
 	if err != nil {
 		mlog.Fatalf("fetching tables fields failed for table '%s':\n%v", table, err)
 	}
-	camelName := gstr.CamelCase(variable)
+	camelName := gstr.CaseCamel(variable)
 	structDefine := generateStructDefinition(fieldMap)
 	packageImports := ""
 	if strings.Contains(structDefine, "gtime.Time") {
@@ -121,7 +192,7 @@ import (
 	"github.com/gogf/gf/database/gdb"
 )`)
 	}
-	packageName := gstr.SnakeCase(variable)
+	packageName := gstr.CaseSnake(variable)
 	fileName := gstr.Trim(packageName, "-_.")
 	if len(fileName) > 5 && fileName[len(fileName)-5:] == "_test" {
 		// Add suffix to avoid the table name which contains "_test",
@@ -215,21 +286,21 @@ func generateStructField(field *gdb.TableField) []string {
 	case "binary", "varbinary", "blob", "tinyblob", "mediumblob", "longblob":
 		typeName = "[]byte"
 
-	case "bit", "int", "tinyint", "small_int", "smallint", "medium_int", "mediumint":
+	case "bit", "int", "int2", "tinyint", "small_int", "smallint", "medium_int", "mediumint":
 		if gstr.ContainsI(field.Type, "unsigned") {
 			typeName = "uint"
 		} else {
 			typeName = "int"
 		}
 
-	case "big_int", "bigint":
+	case "big_int", "bigint", "int8", "int4":
 		if gstr.ContainsI(field.Type, "unsigned") {
 			typeName = "uint64"
 		} else {
 			typeName = "int64"
 		}
 
-	case "float", "double", "decimal":
+	case "float", "double", "decimal", "numeric":
 		typeName = "float64"
 
 	case "bool":
@@ -258,7 +329,7 @@ func generateStructField(field *gdb.TableField) []string {
 		}
 	}
 	ormTag = field.Name
-	jsonTag = gstr.SnakeCase(field.Name)
+	jsonTag = gstr.CaseSnake(field.Name)
 	if gstr.ContainsI(field.Key, "pri") {
 		ormTag += ",primary"
 	}
@@ -272,7 +343,7 @@ func generateStructField(field *gdb.TableField) []string {
 	comment = gstr.Trim(comment)
 	comment = gstr.Replace(comment, `\n`, " ")
 	return []string{
-		"    #" + gstr.CamelCase(field.Name),
+		"    #" + gstr.CaseCamel(field.Name),
 		" #" + typeName,
 		" #" + fmt.Sprintf("`"+`orm:"%s"`, ormTag),
 		" #" + fmt.Sprintf(`json:"%s"`+"`", jsonTag),
@@ -292,7 +363,7 @@ func generateColumnDefinition(fieldMap map[string]*gdb.TableField) string {
 			"\r", " ",
 		}))
 		array[index] = []string{
-			"        #" + gstr.CamelCase(field.Name),
+			"        #" + gstr.CaseCamel(field.Name),
 			" # " + "string",
 			" #" + fmt.Sprintf(`// %s`, comment),
 		}
@@ -321,7 +392,7 @@ func generateColumnNames(fieldMap map[string]*gdb.TableField) string {
 	for index, name := range names {
 		field := fieldMap[name]
 		array[index] = []string{
-			"        #" + gstr.CamelCase(field.Name) + ":",
+			"        #" + gstr.CaseCamel(field.Name) + ":",
 			fmt.Sprintf(` #"%s",`, field.Name),
 		}
 	}
@@ -360,4 +431,22 @@ func sortFieldKey(fieldMap map[string]*gdb.TableField) []string {
 		i++
 	}
 	return result
+}
+
+// getOptionOrConfigForModel retrieves option value from parser and configuration file.
+// It returns the default value specified by parameter <value> is no value found.
+func getOptionOrConfigForModel(index int, parser *gcmd.Parser, name string, defaultValue ...string) (result string) {
+	result = parser.GetOpt(name)
+	if result == "" && g.Config().Available() {
+		g.Cfg().SetViolenceCheck(true)
+		if index >= 0 {
+			result = g.Cfg().GetString(fmt.Sprintf(`%s.%d.%s`, nodeNameGenModelInConfigFile, index, name))
+		} else {
+			result = g.Cfg().GetString(fmt.Sprintf(`%s.%s`, nodeNameGenModelInConfigFile, name))
+		}
+	}
+	if result == "" && len(defaultValue) > 0 {
+		result = defaultValue[0]
+	}
+	return
 }

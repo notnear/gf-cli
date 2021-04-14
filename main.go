@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/gogf/gf-cli/commands/env"
 	"github.com/gogf/gf-cli/commands/mod"
+	"github.com/gogf/gf/errors/gerror"
 	"strings"
 
 	_ "github.com/gogf/gf-cli/boot"
@@ -28,7 +29,7 @@ import (
 )
 
 const (
-	VERSION = "v1.14.3"
+	VERSION = "v1.15.4"
 )
 
 func init() {
@@ -69,6 +70,16 @@ ADDITIONAL
 )
 
 func main() {
+	defer func() {
+		if exception := recover(); exception != nil {
+			if err, ok := exception.(error); ok {
+				mlog.Print(gerror.Current(err).Error())
+			} else {
+				panic(exception)
+			}
+		}
+	}()
+
 	allyes.Init()
 
 	command := gcmd.GetArg(1)
@@ -152,6 +163,8 @@ func help(command string) {
 		pack.Help()
 	case "run":
 		run.Help()
+	case "mod":
+		mod.Help()
 	default:
 		mlog.Print(helpContent)
 	}
